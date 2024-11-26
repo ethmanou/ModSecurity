@@ -1,0 +1,74 @@
+#!/bin/sh
+set -euo pipefail
+
+sed -i \
+  -e "s/{APACHE_TIMEOUT}/${APACHE_TIMEOUT}/" \
+  -e "s|{DOCUMENT_ROOT}|${DOCUMENT_ROOT%/}|" \
+  /etc/apache2/conf.d/vhost.conf
+
+if [ "${APACHE_ROBOTS_TXT}" = "true" ]; then
+  echo >&2 "Robots are not allowed to index this site"
+  sed -i "s/#R//g" /etc/apache2/conf.d/vhost.conf
+fi
+
+if [ "${APACHE_HTACCESS_DEV}" = "true" ]; then
+  echo >&2 "Using dev htaccess"
+  cp /tmp/htaccess-dev /var/www/html/.htaccess
+  cp /tmp/htaccess-dev /tmp/.htaccess
+fi
+
+if [ "${APACHE_HTACCESS_PREPROD}" = "true" ]; then
+  echo >&2 "Using preprod htaccess"
+  cp /tmp/htaccess-preprod /var/www/html/.htaccess
+  cp /tmp/htaccess-preprod /tmp/.htaccess 
+fi
+
+if [ "${APACHE_HTACCESS_PROD}" = "true" ]; then
+  echo >&2 "Using prod htaccess"
+  cp /tmp/htaccess-prod /var/www/html/.htaccess
+  cp /tmp/htaccess-prod /tmp/.htaccess 
+fi
+
+if (! [ -z "${APACHE_AUTH_PASSWORD}" ]) then
+  echo >&2 "Site is restricted to ${APACHE_AUTH_LOGIN} user"
+  htpasswd -b -c /etc/apache2/.htpasswd ${APACHE_AUTH_LOGIN} ${APACHE_AUTH_PASSWORD}
+  sed -i \
+    -e "s/#A//g" \
+    -e "s/Require all granted//g" \
+    /etc/apache2/conf.d/vhost.conf
+fi
+
+if [ "${OPCACHE}" = "false" ]; then
+  if [ -f /usr/local/etc/php/conf.d/docker-php-ext-opcache.ini ]; then
+    rm /usr/local/etc/php/conf.d/docker-php-ext-opcache.ini
+  fi
+  if [ -f /usr/local/etc/php/conf.d/opcache-recommended.ini ]; then
+    rm /usr/local/etc/php/conf.d/opcache-recommended.ini
+  fi
+fi
+
+cp /usr/local/etc/php-fpm.d/all/www.conf /usr/local/etc/php-fpm.d/zz-www-custom.conf
+
+sed -i -e "s/{FPM_PM}/${FPM_PM}/" \
+  -e "s/{FPM_PM_MAX_CHILDREN}/${FPM_PM_MAX_CHILDREN}/" \
+  -e "s/{FPM_PM_START_SERVERS}/${FPM_PM_START_SERVERS}/" \
+  -e "s/{FPM_PM_MIN_SPARE_SERVERS}/${FPM_PM_MIN_SPARE_SERVERS}/" \
+  -e "s/{FPM_PM_MAX_SPARE_SERVERS}/${FPM_PM_MAX_SPARE_SERVERS}/" \
+  -e "s/{FPM_PM_MAX_REQUESTS}/${FPM_PM_MAX_REQUESTS}/"\
+  -e "s/{FPM_MEMORY_LIMIT}/${FPM_MEMORY_LIMIT}/"\
+  -e "s/{FPM_UPLOAD_MAX_FILESIZE}/${FPM_UPLOAD_MAX_FILESIZE}/"\
+  -e "s/{FPM_POST_MAX_SIZE}/${FPM_POST_MAX_SIZE}/" /usr/local/etc/php-fpm.d/zz-www-custom.conf
+
+if [ ! -z "${USER_ID:-}" ]; then
+  echo >&2 "Change www-data user id to $USER_ID"
+  usermod -u $USER_ID www-data
+fi
+
+# Apache gets grumpy about PID files pre-existing
+mkdir -p /run/apache2
+
+php-fpm &
+php-fpm \
+  --fpm-config /usr/local/etc/php-fpm.d/all/xdebug.conf \
+  -c /usr/local/etc/php-xdebug.ini &
+exec httpd -DFOREGROUND
